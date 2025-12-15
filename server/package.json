@@ -1,0 +1,15 @@
+{
+  "name": "stentelligence",
+  "version": "2.12.0",
+  "description": "Industrial stencil editor with professional CAM rules",
+  "main": "gerber-service.js",
+  "scripts": {
+    "start": "node gerber-service.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "gerber-parser": "^4.2.7",
+    "gerber-plotter": "^4.2.7",
+    "@anthropic-ai/sdk": "^0.52.0"
+  }
+}
