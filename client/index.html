@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stentelligence by Stentech</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { margin: 0; font-family: ui-monospace, monospace; background: #09090b; }
+    .grab { cursor: grab; } .grabbing { cursor: grabbing; } .crosshair { cursor: crosshair; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+const API = 'http://localhost:3001';
+
+const Icon = ({ name, size = 16 }) => {
+  const p = {
+    upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
+    zoomIn: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>',
+    zoomOut: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>',
+    reset: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+    undo: '<polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>',
+    redo: '<polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/>',
+    eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff: '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
+    layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    wand: '<path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M15 9h0M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5"/>',
+    hand: '<path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+    select: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="9" y="9" width="6" height="6"/>'
+  };
+  return React.createElement('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', dangerouslySetInnerHTML: { __html: p[name] || '' } });
+};
+
+function App() {
+  const [status, setStatus] = useState('checking');
+  const [layers, setLayers] = useState([]);
+  const [originalPaste, setOriginalPaste] = useState(null); // Static original
+  const [fidLayer, setFidLayer] = useState(null);
+  const [side, setSide] = useState('top');
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState([]);
+  const [hist, setHist] = useState([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const [vp, setVp] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [tool, setTool] = useState('pan');
+  const [selBox, setSelBox] = useState(null);
+  const [drag, setDrag] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [lastPan, setLastPan] = useState({ x: 0, y: 0 });
+  const [showOriginal, setShowOriginal] = useState(true);
+  
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  
+  const addLog = useCallback(m => setLog(p => [...p.slice(-50), new Date().toLocaleTimeString().slice(0,5) + ': ' + m]), []);
+  
+  useEffect(() => { fetch(API + '/defaults').then(r => r.ok ? setStatus('ok') : setStatus('err')).catch(() => setStatus('off')); }, []);
+  
+  const paste = layers.find(l => l.type === 'paste' && l.side === side);
+  const visible = layers.filter(l => l.visible && l.side === side);
+  
+  // Selection counts - paste layer only (for modifications)
+  const selCount = paste?.data?.shapes.filter(s => s.selected && !s.deleted).length || 0;
+  const modCount = paste?.data?.shapes.filter(s => s.modified && !s.deleted).length || 0;
+  const paneCount = paste?.data?.shapes.filter(s => s.type === 'pane' && !s.deleted).length || 0;
+  
+  // Cross-layer selection count (for fiducials - any layer)
+  const allSelCount = useMemo(() => {
+    let count = 0;
+    layers.forEach(l => {
+      if (l.side === side && l.data?.shapes) {
+        count += l.data.shapes.filter(s => s.selected && !s.deleted).length;
+      }
+    });
+    return count;
+  }, [layers, side]);
+  
+  // Count by edit type
+  const editCounts = useMemo(() => {
+    if (!paste?.data?.shapes) return {};
+    const counts = { reduce: 0, finePitch: 0, cornerRadius: 0, windowPane: 0 };
+    paste.data.shapes.forEach(s => {
+      if (s.editType && !s.deleted) counts[s.editType] = (counts[s.editType] || 0) + 1;
+    });
+    // Count panes
+    counts.windowPane = paste.data.shapes.filter(s => s.type === 'pane' && !s.deleted).length;
+    return counts;
+  }, [paste]);
+  
+  const bounds = useMemo(() => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const add = d => { if (d?.bounds) { minX = Math.min(minX, d.bounds.minX); maxX = Math.max(maxX, d.bounds.maxX); minY = Math.min(minY, d.bounds.minY); maxY = Math.max(maxY, d.bounds.maxY); } };
+    visible.forEach(l => add(l.data));
+    if (originalPaste?.side === side) add(originalPaste.data);
+    if (fidLayer?.visible) add(fidLayer.data);
+    if (!isFinite(minX)) return null;
+    return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+  }, [visible, originalPaste, fidLayer, side]);
+  
+  const getTx = useCallback(() => {
+    if (!bounds || !containerRef.current) return null;
+    const r = containerRef.current.getBoundingClientRect();
+    const pad = 40;
+    const base = Math.min((r.width - pad * 2) / bounds.width, (r.height - pad * 2) / bounds.height);
+    const scale = base * vp.zoom;
+    const cx = r.width / 2 + vp.panX, cy = r.height / 2 + vp.panY;
+    const bcx = (bounds.minX + bounds.maxX) / 2, bcy = (bounds.minY + bounds.maxY) / 2;
+    return { scale, cx, cy, bcx, bcy, r };
+  }, [bounds, vp]);
+  
+  const w2s = useCallback((wx, wy) => { const t = getTx(); if (!t) return null; return { x: t.cx + (wx - t.bcx) * t.scale, y: t.cy - (wy - t.bcy) * t.scale }; }, [getTx]);
+  
+  // Canvas rendering
+  useEffect(() => {
+    const canvas = canvasRef.current, container = containerRef.current;
+    if (!canvas || !container) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px'; canvas.style.height = rect.height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, rect.width, rect.height);
+    if (!bounds) return;
+    const t = getTx(); if (!t) return;
+    const toX = x => t.cx + (x - t.bcx) * t.scale;
+    const toY = y => t.cy - (y - t.bcy) * t.scale;
+    
+    // Grid
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 0.5;
+    const gs = bounds.width > 5 ? 1 : 0.5;
+    for (let x = Math.floor(bounds.minX / gs) * gs; x <= bounds.maxX; x += gs) { ctx.beginPath(); ctx.moveTo(toX(x), toY(bounds.minY)); ctx.lineTo(toX(x), toY(bounds.maxY)); ctx.stroke(); }
+    for (let y = Math.floor(bounds.minY / gs) * gs; y <= bounds.maxY; y += gs) { ctx.beginPath(); ctx.moveTo(toX(bounds.minX), toY(y)); ctx.lineTo(toX(bounds.maxX), toY(y)); ctx.stroke(); }
+    
+    const drawShape = (sh, w, h, col, alpha = 1, tool = null) => {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = col;
+      const sx = toX(sh.x), sy = toY(sh.y), sw = w * t.scale, sh2 = h * t.scale;
+      
+      if (sh.cornerRadius && sh.cornerRadius > 0) {
+        const cr = Math.min(sh.cornerRadius * t.scale, sw/2, sh2/2);
+        ctx.beginPath();
+        ctx.roundRect(sx - sw/2, sy - sh2/2, sw, sh2, cr);
+        ctx.fill();
+      } else if (sh.type === 'fill' && sh.points) {
+        ctx.beginPath();
+        ctx.moveTo(toX(sh.points[0].x), toY(sh.points[0].y));
+        for (let i = 1; i < sh.points.length; i++) ctx.lineTo(toX(sh.points[i].x), toY(sh.points[i].y));
+        ctx.closePath(); ctx.fill();
+      } else if (sh.type === 'stroke') {
+        ctx.strokeStyle = col;
+        ctx.lineWidth = Math.max(1, w * t.scale);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(toX(sh.x1), toY(sh.y1));
+        ctx.lineTo(toX(sh.x2), toY(sh.y2));
+        ctx.stroke();
+      } else {
+        const typ = tool?.type || 'rect';
+        if (typ === 'circle') { ctx.beginPath(); ctx.arc(sx, sy, sw / 2, 0, Math.PI * 2); ctx.fill(); }
+        else ctx.fillRect(sx - sw/2, sy - sh2/2, sw, sh2);
+      }
+      ctx.globalAlpha = 1;
+    };
+    
+    const layerColors = { paste: '#22c55e', copper: '#f59e0b', mask: '#3b82f6', silk: '#f8fafc', outline: '#eab308', drill: '#a855f7' };
+    
+    // 1. Draw non-paste layers first (with selection highlighting)
+    visible.filter(l => l.type !== 'paste').forEach(layer => {
+      if (!layer.data?.shapes) return;
+      const baseCol = layerColors[layer.type] || '#6b7280';
+      layer.data.shapes.forEach(sh => {
+        if (sh.deleted) return;
+        const tool = layer.data.tools?.[sh.tool];
+        const w = sh.width || tool?.width || 0.01;
+        const h = sh.height || tool?.height || w;
+        // Highlight selected shapes in cyan
+        const col = sh.selected ? '#06b6d4' : baseCol;
+        const alpha = sh.selected ? 1 : 0.7;
+        drawShape(sh, w, h, col, alpha, tool);
+      });
+    });
+    
+    // 2. Draw ORIGINAL paste layer (static, gray) if enabled
+    if (showOriginal && originalPaste?.data && originalPaste.side === side) {
+      originalPaste.data.shapes.forEach(sh => {
+        const tool = originalPaste.data.tools?.[sh.tool];
+        const w = sh.width || tool?.width || 0.01;
+        const h = sh.height || tool?.height || w;
+        drawShape(sh, w, h, '#374151', 0.5, tool);
+      });
+    }
+    
+    // 3. Draw parent shapes for window panes (the original thermal pad outline)
+    if (showOriginal && paste?.data) {
+      const drawnParents = new Set();
+      paste.data.shapes.forEach(sh => {
+        if (sh.type === 'pane' && sh.parentOriginalWidth && !drawnParents.has(sh.parentId)) {
+          drawnParents.add(sh.parentId);
+          ctx.globalAlpha = 0.4;
+          ctx.fillStyle = '#374151';
+          const sx = toX(sh.parentX), sy = toY(sh.parentY);
+          const sw = sh.parentOriginalWidth * t.scale, sh2 = sh.parentOriginalHeight * t.scale;
+          ctx.fillRect(sx - sw/2, sy - sh2/2, sw, sh2);
+          ctx.globalAlpha = 1;
+        }
+      });
+    }
+    
+    // 4. Draw MODIFIED paste layer on top
+    if (paste?.data) {
+      paste.data.shapes.forEach(sh => {
+        if (sh.deleted) return;
+        const tool = paste.data.tools?.[sh.tool];
+        // For fills, use the shape's own width/height; for pads, use tool dimensions
+        const w = sh.modifiedWidth || sh.width || tool?.width || 0.01;
+        const h = sh.modifiedHeight || sh.height || tool?.height || w;
+        
+        // Color by edit type
+        let col = '#22c55e'; // green = unmodified
+        if (sh.selected) col = '#06b6d4'; // cyan = selected
+        else if (sh.editType === 'reduce') col = '#f97316'; // orange
+        else if (sh.editType === 'finePitch') col = '#eab308'; // yellow
+        else if (sh.editType === 'cornerRadius') col = '#8b5cf6'; // purple
+        else if (sh.editType === 'windowPane' || sh.type === 'pane') col = '#ec4899'; // pink
+        else if (sh.modified) col = '#f97316'; // orange fallback
+        
+        drawShape(sh, w, h, col, 1, tool);
+      });
+    }
+    
+    // 5. Draw fiducials (preserve shape type)
+    if (fidLayer?.visible && fidLayer.data) {
+      fidLayer.data.shapes.forEach(sh => {
+        if (sh.deleted) return;
+        const w = sh.width || 0.01;
+        const h = sh.height || w;
+        // Create a fake tool with the preserved shape type
+        const fakeTool = { type: sh.shapeType || 'circle', width: w, height: h };
+        drawShape(sh, w, h, '#14b8a6', 1, fakeTool);
+      });
+    }
+    
+    // Selection box
+    if (selBox) {
+      ctx.strokeStyle = '#06b6d4'; ctx.lineWidth = 1; ctx.setLineDash([5, 5]);
+      ctx.strokeRect(selBox.x, selBox.y, selBox.w, selBox.h);
+      ctx.setLineDash([]); ctx.fillStyle = 'rgba(6,182,212,0.1)';
+      ctx.fillRect(selBox.x, selBox.y, selBox.w, selBox.h);
+    }
+    
+    // Scale bar
+    ctx.fillStyle = '#666'; ctx.font = '11px monospace';
+    const u = bounds.width > 5 ? 1 : 0.1, lbl = bounds.width > 5 ? '1"' : '0.1"';
+    ctx.fillRect(20, rect.height - 30, u * t.scale, 3); ctx.fillText(lbl, 20, rect.height - 35);
+  }, [visible, originalPaste, paste, fidLayer, bounds, vp, selBox, getTx, showOriginal, side]);
+  
+  // Mouse handlers
+  const onDown = e => {
+    const r = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    setDrag(true); setDragStart({ x, y }); setLastPan({ x: vp.panX, y: vp.panY });
+    if (tool === 'select') setSelBox({ x, y, w: 0, h: 0 });
+  };
+  const onMove = e => {
+    if (!drag) return;
+    const r = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    if (tool === 'pan') setVp(v => ({ ...v, panX: lastPan.x + (x - dragStart.x), panY: lastPan.y + (y - dragStart.y) }));
+    else if (tool === 'select') setSelBox({ x: Math.min(dragStart.x, x), y: Math.min(dragStart.y, y), w: Math.abs(x - dragStart.x), h: Math.abs(y - dragStart.y) });
+  };
+  const onUp = () => {
+    if (tool === 'select' && selBox) {
+      // Select from ALL visible layers on current side
+      const nl = layers.map(l => {
+        if (!l.visible || l.side !== side || !l.data?.shapes) return l;
+        const nd = { ...l.data };
+        nd.shapes = nd.shapes.map(sh => {
+          if (sh.deleted) return sh;
+          const sc = w2s(sh.x, sh.y); if (!sc) return sh;
+          const inB = sc.x >= selBox.x && sc.x <= selBox.x + selBox.w && sc.y >= selBox.y && sc.y <= selBox.y + selBox.h;
+          return { ...sh, selected: inB ? !sh.selected : sh.selected };
+        });
+        return { ...l, data: nd };
+      });
+      setLayers(nl);
+      
+      // Count selections across all layers
+      let totalSel = 0;
+      nl.forEach(l => {
+        if (l.side === side && l.data?.shapes) {
+          totalSel += l.data.shapes.filter(s => s.selected && !s.deleted).length;
+        }
+      });
+      addLog('Selected ' + totalSel + ' shapes');
+    }
+    setDrag(false); setSelBox(null);
+  };
+  const onWheel = e => { e.preventDefault(); setVp(v => ({ ...v, zoom: Math.max(0.1, Math.min(20, v.zoom * (1 + (e.deltaY < 0 ? 0.1 : -0.1)))) })); };
+  
+  // Layer detection - more permissive
+  const detectType = fn => {
+    const l = fn.toLowerCase();
+    // Detect side
+    let s = 'top';
+    if (l.includes('bottom') || l.includes('_b.') || l.includes('.gbl') || l.includes('.gbs') || l.includes('.gbo') || l.includes('.gbp')) {
+      s = 'bottom';
+    }
+    // Detect type
+    let t = 'paste'; // Default to paste for unknown
+    if (l.includes('.gtp') || l.includes('.gbp') || l.includes('paste') || l.includes('solderpaste') || l.includes('cream')) {
+      t = 'paste';
+    } else if (l.includes('.gtl') || l.includes('.gbl') || l.includes('copper') || l.includes('_cu')) {
+      t = 'copper';
+    } else if (l.includes('.gts') || l.includes('.gbs') || l.includes('mask') || l.includes('solder')) {
+      t = 'mask';
+    } else if (l.includes('.gto') || l.includes('.gbo') || l.includes('silk') || l.includes('legend')) {
+      t = 'silk';
+    } else if (l.includes('.gko') || l.includes('.gm1') || l.includes('.gm') || l.includes('outline') || l.includes('edge') || l.includes('board')) {
+      t = 'outline';
+    } else if (l.includes('.drl') || l.includes('drill')) {
+      t = 'drill';
+    }
+    console.log('Detected:', fn, '->', t, s);
+    return { type: t, side: s };
+  };
+  
+  // File upload
+  const handleFiles = async files => {
+    if (status !== 'ok') { addLog('Server not connected'); return; }
+    const nl = [...layers];
+    for (const f of Array.from(files)) {
+      addLog('Parsing ' + f.name + '...');
+      try {
+        const txt = await f.text();
+        if (!txt || txt.length === 0) {
+          addLog('Error: Empty file');
+          continue;
+        }
+        addLog('Sending ' + txt.length + ' bytes...');
+        const res = await fetch(API + '/parse', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ gerber: txt }) 
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error('Server error: ' + res.status + ' ' + errText);
+        }
+        const data = await res.json();
+        if (!data || !data.shapes) {
+          throw new Error('Invalid response from server');
+        }
+        const { type, side: s } = detectType(f.name);
+        const idx = nl.findIndex(x => x.type === type && x.side === s);
+        if (idx >= 0) nl.splice(idx, 1);
+        nl.push({ name: f.name, type, side: s, visible: true, data, raw: txt });
+        
+        // Store original paste separately
+        if (type === 'paste') {
+          setOriginalPaste({ name: f.name, type, side: s, data: JSON.parse(JSON.stringify(data)) });
+        }
+        
+        addLog('Loaded ' + f.name + ': ' + type + ' ' + s + ' (' + data.shapes.length + ' shapes)');
+      } catch (e) { 
+        console.error('Upload error:', e);
+        addLog('Error: ' + e.message); 
+      }
+    }
+    setLayers(nl); saveHist(nl);
+  };
+  
+  // History
+  const saveHist = (nl, nf = fidLayer) => {
+    const st = { layers: JSON.parse(JSON.stringify(nl)), fid: nf ? JSON.parse(JSON.stringify(nf)) : null };
+    const nh = hist.slice(0, histIdx + 1); nh.push(st);
+    setHist(nh); setHistIdx(nh.length - 1);
+  };
+  const undo = () => { if (histIdx > 0) { const s = hist[histIdx - 1]; setLayers(JSON.parse(JSON.stringify(s.layers))); setFidLayer(s.fid ? JSON.parse(JSON.stringify(s.fid)) : null); setHistIdx(histIdx - 1); addLog('Undo'); } };
+  const redo = () => { if (histIdx < hist.length - 1) { const s = hist[histIdx + 1]; setLayers(JSON.parse(JSON.stringify(s.layers))); setFidLayer(s.fid ? JSON.parse(JSON.stringify(s.fid)) : null); setHistIdx(histIdx + 1); addLog('Redo'); } };
+  
+  // Command parser
+  const parseCmd = txt => {
+    const l = txt.toLowerCase().trim();
+    if (l === 'fids' || l === 'fid' || l === 'fiducials') return { action: 'fiducials' };
+    const wp = l.match(/(\d+)\s*x\s*(\d+)/);
+    if (wp && (l.includes('pane') || l.includes('window'))) {
+      const rows = parseInt(wp[1]), cols = parseInt(wp[2]);
+      const red = l.match(/(\d+(?:\.\d+)?)\s*%/);
+      const web = l.match(/(\d+(?:\.\d+)?)\s*(?:mm)?\s*web/);
+      return { action: 'windowPane', target: 'all', selectedOnly: selCount > 0, windowPane: { rows, cols, webWidth: web ? parseFloat(web[1]) : 0.4, edgeGap: 0.15, reduction: red ? parseFloat(red[1]) : 0 } };
+    }
+    let act = null;
+    if (l.includes('reduce') || l.includes('shrink')) act = 'reduce';
+    else if (l.includes('increase') || l.includes('enlarge')) act = 'scale';
+    else if (l.includes('delete') || l.includes('remove')) act = 'delete';
+    else if (l.includes('corner') || l.includes('round')) act = 'cornerRadius';
+    if (!act) return null;
+    let tgt = 'all';
+    if (l.includes('circle')) tgt = 'circles';
+    else if (l.includes('rect')) tgt = 'rectangles';
+    else if (l.includes('thermal') || l.includes('large')) tgt = 'thermal';
+    else if (l.includes('fine') || l.includes('pitch')) tgt = 'finePitch';
+    let val = 10, unit = 'percent';
+    const pct = l.match(/(\d+(?:\.\d+)?)\s*%/);
+    const mm = l.match(/(\d+(?:\.\d+)?)\s*mm/);
+    const mil = l.match(/(\d+(?:\.\d+)?)\s*mil/);
+    if (pct) { val = parseFloat(pct[1]); unit = 'percent'; }
+    else if (mm) { val = parseFloat(mm[1]); unit = 'mm'; }
+    else if (mil) { val = parseFloat(mil[1]); unit = 'mil'; }
+    return { action: act, target: tgt, value: val, unit, selectedOnly: selCount > 0 };
+  };
+  
+  // Execute command
+  const execCmd = async cmd => {
+    setBusy(true);
+    try {
+      // Handle fiducial modifications (doesn't need paste layer)
+      if (cmd.action === 'modifyFids') {
+        if (!fidLayer?.data?.shapes?.length) {
+          addLog('No fiducials to modify - grab some first');
+          setBusy(false);
+          return;
+        }
+        modifyFids(cmd.fidSize || 40, cmd.fidUnit || 'mil', cmd.fidShape || 'circle');
+        setBusy(false);
+        return;
+      }
+      
+      // All other commands need paste layer
+      if (!paste) {
+        addLog('Load paste layer first');
+        setBusy(false);
+        return;
+      }
+      
+      if (cmd.action === 'fiducials') {
+        if (selCount === 0) { addLog('Select shapes first'); setBusy(false); return; }
+        const res = await fetch(API + '/fiducials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: paste.data }) });
+        const { data, fiducials, count } = await res.json();
+        const nl = layers.map(x => x === paste ? { ...x, data } : x);
+        const nf = { name: 'Fiducials', type: 'fid', side, visible: true, data: { shapes: fiducials, tools: paste.data.tools, bounds: paste.data.bounds } };
+        setLayers(nl); setFidLayer(nf); saveHist(nl, nf);
+        addLog('Moved ' + count + ' to fiducials');
+      } else {
+        const res = await fetch(API + '/modify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: paste.data, command: cmd }) });
+        const { data, modifiedCount } = await res.json();
+        const nl = layers.map(x => x === paste ? { ...x, data } : x);
+        setLayers(nl); saveHist(nl);
+        if (cmd.action === 'windowPane') addLog('Created ' + cmd.windowPane.rows + 'x' + cmd.windowPane.cols + ' panes (' + modifiedCount + ')');
+        else addLog('Modified ' + modifiedCount + ' shapes');
+      }
+    } catch (e) { addLog('Error: ' + e.message); }
+    setBusy(false);
+  };
+  
+  const handleApply = async () => {
+    if (!prompt.trim()) return;
+    if (!paste) { addLog('Load paste layer first'); return; }
+    
+    addLog('Interpreting: "' + prompt + '"...');
+    setBusy(true);
+    
+    try {
+      // Calculate shape stats for context
+      const shapeStats = {
+        totalShapes: paste.data.shapes.filter(s => !s.deleted).length,
+        selectedCount: selCount,
+        modifiedCount: modCount
+      };
+      
+      // Get areas/dimensions for stats
+      let minArea = Infinity, maxArea = 0;
+      paste.data.shapes.forEach(s => {
+        if (s.deleted) return;
+        const tool = paste.data.tools?.[s.tool];
+        const w = s.width || tool?.width || 0.01;
+        const h = s.height || tool?.height || w;
+        const area = w * h;
+        minArea = Math.min(minArea, area);
+        maxArea = Math.max(maxArea, area);
+      });
+      shapeStats.minAreaIn2 = minArea;
+      shapeStats.maxAreaIn2 = maxArea;
+      
+      // Call AI interpretation endpoint
+      const res = await fetch(API + '/interpret', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, shapeStats })
+      });
+      
+      if (!res.ok) throw new Error('Interpretation failed');
+      
+      const { success, command, source } = await res.json();
+      
+      if (!success || !command) {
+        addLog('Could not interpret command');
+        setBusy(false);
+        return;
+      }
+      
+      // Log interpretation
+      const srcLabel = source === 'ai' ? '🤖 AI' : '📝 Local';
+      addLog(srcLabel + ': ' + (command.explanation || command.action + ' on ' + command.target));
+      
+      // Apply if user has selection and command isn't explicitly for all
+      if (selCount > 0 && command.target !== 'all' && !command.selectedOnly) {
+        command.selectedOnly = true;
+        addLog('(applying to selection)');
+      }
+      
+      // Execute the interpreted command
+      await execCmd(command);
+      setPrompt('');
+      
+    } catch (e) {
+      console.error('Interpret error:', e);
+      addLog('Error: ' + e.message);
+      
+      // Fallback to local parser
+      addLog('Trying local parser...');
+      const cmd = parseCmd(prompt);
+      if (cmd) {
+        await execCmd(cmd);
+        setPrompt('');
+      } else {
+        addLog('Could not parse command');
+      }
+    }
+    
+    setBusy(false);
+  };
+  
+  // Quick commands
+  const quickCmds = [
+    { label: 'Reduce 10%', cmd: { action: 'reduce', target: 'all', value: 10, unit: 'percent', selectedOnly: false }, c: 'bg-orange-900/50 text-orange-300 border-orange-700' },
+    { label: 'Reduce 5%', cmd: { action: 'reduce', target: 'all', value: 5, unit: 'percent', selectedOnly: false }, c: 'bg-orange-900/50 text-orange-300 border-orange-700' },
+    { label: '2x2 Pane', cmd: { action: 'windowPane', target: 'all', selectedOnly: true, windowPane: { rows: 2, cols: 2, webWidth: 0.4, edgeGap: 0.15, reduction: 10 } }, c: 'bg-pink-900/50 text-pink-300 border-pink-700' },
+    { label: '3x3 Pane', cmd: { action: 'windowPane', target: 'all', selectedOnly: true, windowPane: { rows: 3, cols: 3, webWidth: 0.4, edgeGap: 0.15, reduction: 10 } }, c: 'bg-pink-900/50 text-pink-300 border-pink-700' },
+    { label: '4x4 Pane', cmd: { action: 'windowPane', target: 'all', selectedOnly: true, windowPane: { rows: 4, cols: 4, webWidth: 0.4, edgeGap: 0.15, reduction: 10 } }, c: 'bg-pink-900/50 text-pink-300 border-pink-700' }
+  ];
+  
+  // Stentech Instant Edit
+  const instantEdit = async () => {
+    if (!paste) return;
+    setBusy(true); addLog('Applying Stentech Instant Edit...');
+    try {
+      const res = await fetch(API + '/instant-edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: paste.data }) });
+      const { data, log: el } = await res.json();
+      const nl = layers.map(x => x === paste ? { ...x, data } : x);
+      setLayers(nl); saveHist(nl);
+      el.forEach(m => addLog(m));
+      addLog('✓ Instant Edit complete!');
+    } catch (e) { addLog('Error: ' + e.message); }
+    setBusy(false);
+  };
+  
+  // Export
+  const doExport = async type => {
+    const d = type === 'fid' ? fidLayer?.data : paste?.data;
+    if (!d) return;
+    try {
+      const res = await fetch(API + '/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: d }) });
+      const txt = await res.text();
+      const blob = new Blob([txt], { type: 'text/plain' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = type === 'fid' ? 'fiducials.gbr' : paste.name.replace(/\.[^.]+$/, '') + '_modified.gbr';
+      a.click(); addLog('Exported ' + type);
+    } catch (e) { addLog('Export error: ' + e.message); }
+  };
+  
+  const clearSel = () => {
+    // Clear selection from ALL layers
+    const nl = layers.map(l => {
+      if (!l.data?.shapes) return l;
+      return { ...l, data: { ...l.data, shapes: l.data.shapes.map(s => ({ ...s, selected: false })) } };
+    });
+    setLayers(nl);
+  };
+  
+  // Modify fiducials (size, shape)
+  const modifyFids = (size, unit, shape) => {
+    if (!fidLayer?.data?.shapes?.length) {
+      addLog('No fiducials to modify');
+      return;
+    }
+    
+    // Convert size to inches
+    let sizeIn = size;
+    if (unit === 'mil') sizeIn = size / 1000;
+    else if (unit === 'mm') sizeIn = size / 25.4;
+    
+    const nf = {
+      ...fidLayer,
+      data: {
+        ...fidLayer.data,
+        shapes: fidLayer.data.shapes.map(sh => ({
+          ...sh,
+          width: sizeIn,
+          height: sizeIn,
+          shapeType: shape || sh.shapeType || 'circle'
+        }))
+      }
+    };
+    
+    setFidLayer(nf);
+    saveHist(layers, nf);
+    addLog('Changed ' + nf.data.shapes.length + ' fids to ' + size + unit + ' ' + (shape || 'rounds'));
+  };
+  
+  // Grab fiducials from ANY layer's selection
+  const grabFids = () => {
+    if (allSelCount === 0) {
+      addLog('Select shapes first (from any layer)');
+      return;
+    }
+    
+    const fids = [];
+    const nl = layers.map(l => {
+      if (l.side !== side || !l.data?.shapes) return l;
+      
+      const newShapes = [];
+      l.data.shapes.forEach(sh => {
+        if (sh.selected && !sh.deleted) {
+          const tool = l.data.tools?.[sh.tool];
+          // Move to fiducials - preserve shape type!
+          fids.push({ 
+            ...sh, 
+            selected: false, 
+            isFiducial: true,
+            sourceLayer: l.type,
+            // Preserve tool info including type (circle/rect)
+            shapeType: tool?.type || 'rect',
+            width: sh.width || tool?.width || 0.01,
+            height: sh.height || tool?.height || sh.width || tool?.width || 0.01
+          });
+          // Mark as deleted in source layer
+          newShapes.push({ ...sh, deleted: true, selected: false });
+        } else {
+          newShapes.push(sh);
+        }
+      });
+      
+      return { ...l, data: { ...l.data, shapes: newShapes } };
+    });
+    
+    // Create or update fiducial layer
+    const existingFids = fidLayer?.data?.shapes || [];
+    const allFids = [...existingFids, ...fids];
+    const nf = { 
+      name: 'Fiducials', 
+      type: 'fid', 
+      side, 
+      visible: true, 
+      data: { 
+        shapes: allFids, 
+        tools: { ...paste?.data?.tools }, // Copy tools for reference
+        bounds: paste?.data?.bounds 
+      } 
+    };
+    
+    setLayers(nl);
+    setFidLayer(nf);
+    saveHist(nl, nf);
+    addLog('Grabbed ' + fids.length + ' fiducials from ' + [...new Set(fids.map(f => f.sourceLayer))].join(', '));
+  };
+  
+  const zoom = d => setVp(v => ({ ...v, zoom: Math.max(0.1, Math.min(20, v.zoom * (1 + d))) }));
+  const resetV = () => setVp({ zoom: 1, panX: 0, panY: 0 });
+  
+  const cursor = tool === 'pan' ? (drag ? 'grabbing' : 'grab') : 'crosshair';
+  
+  return React.createElement('div', { className: 'h-screen flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden' },
+    // Header
+    React.createElement('div', { className: 'h-12 border-b border-zinc-800 flex items-center px-4 gap-3 shrink-0' },
+      React.createElement('div', { className: 'flex items-center gap-2' },
+        React.createElement('div', { className: 'w-7 h-7 rounded bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center' }, React.createElement(Icon, { name: 'layers', size: 16 })),
+        React.createElement('div', null, React.createElement('h1', { className: 'text-xs font-bold' }, React.createElement('span', { className: 'text-emerald-400' }, 'Stent'), React.createElement('span', { className: 'text-cyan-400' }, 'elligence')), React.createElement('p', { className: 'text-[9px] text-zinc-500 -mt-0.5' }, 'by Stentech'))),
+      React.createElement('div', { className: 'flex items-center gap-1 px-2 py-0.5 rounded text-[10px] ' + (status === 'ok' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-red-900/50 text-red-400') }, React.createElement(Icon, { name: status === 'ok' ? 'check' : 'x', size: 10 }), status === 'ok' ? 'OK' : 'Offline'),
+      React.createElement('div', { className: 'h-5 w-px bg-zinc-800' }),
+      React.createElement('label', { className: 'flex items-center gap-1.5 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded cursor-pointer text-xs' }, React.createElement(Icon, { name: 'upload', size: 12 }), 'Upload', React.createElement('input', { type: 'file', multiple: true, accept: '.gbr,.gtp,.gbp,.gtl,.gbl,.gts,.gbs,.gto,.gbo,.gko,.gm1', className: 'hidden', disabled: status !== 'ok', onChange: e => e.target.files && handleFiles(e.target.files) })),
+      React.createElement('div', { className: 'h-5 w-px bg-zinc-800' }),
+      React.createElement('div', { className: 'flex items-center gap-0.5 bg-zinc-800 rounded p-0.5' },
+        React.createElement('button', { onClick: () => setTool('pan'), className: 'p-1 rounded ' + (tool === 'pan' ? 'bg-zinc-600' : 'hover:bg-zinc-700'), title: 'Pan' }, React.createElement(Icon, { name: 'hand', size: 14 })),
+        React.createElement('button', { onClick: () => setTool('select'), className: 'p-1 rounded ' + (tool === 'select' ? 'bg-cyan-600' : 'hover:bg-zinc-700'), title: 'Select' }, React.createElement(Icon, { name: 'select', size: 14 }))),
+      selCount > 0 && React.createElement('button', { onClick: clearSel, className: 'px-2 py-0.5 text-[10px] text-cyan-400 hover:bg-zinc-800 rounded' }, selCount + ' paste sel ✕'),
+      allSelCount > selCount && React.createElement('span', { className: 'px-2 py-0.5 text-[10px] text-amber-400' }, '+' + (allSelCount - selCount) + ' other'),
+      React.createElement('div', { className: 'h-5 w-px bg-zinc-800' }),
+      React.createElement('div', { className: 'flex items-center gap-0.5 bg-zinc-800 rounded p-0.5' },
+        React.createElement('button', { onClick: () => setSide('top'), className: 'px-2 py-0.5 text-[10px] rounded ' + (side === 'top' ? 'bg-emerald-600' : 'hover:bg-zinc-700') }, 'TOP'),
+        React.createElement('button', { onClick: () => setSide('bottom'), className: 'px-2 py-0.5 text-[10px] rounded ' + (side === 'bottom' ? 'bg-emerald-600' : 'hover:bg-zinc-700') }, 'BOT')),
+      React.createElement('div', { className: 'flex-1' }),
+      React.createElement('div', { className: 'flex items-center gap-0.5' },
+        React.createElement('button', { onClick: () => zoom(0.2), className: 'p-1 hover:bg-zinc-800 rounded' }, React.createElement(Icon, { name: 'zoomIn', size: 14 })),
+        React.createElement('button', { onClick: () => zoom(-0.2), className: 'p-1 hover:bg-zinc-800 rounded' }, React.createElement(Icon, { name: 'zoomOut', size: 14 })),
+        React.createElement('button', { onClick: resetV, className: 'p-1 hover:bg-zinc-800 rounded' }, React.createElement(Icon, { name: 'reset', size: 14 }))),
+      React.createElement('div', { className: 'h-5 w-px bg-zinc-800' }),
+      React.createElement('div', { className: 'flex items-center gap-0.5' },
+        React.createElement('button', { onClick: undo, disabled: histIdx <= 0, className: 'p-1 hover:bg-zinc-800 rounded disabled:opacity-30' }, React.createElement(Icon, { name: 'undo', size: 14 })),
+        React.createElement('button', { onClick: redo, disabled: histIdx >= hist.length - 1, className: 'p-1 hover:bg-zinc-800 rounded disabled:opacity-30' }, React.createElement(Icon, { name: 'redo', size: 14 })))),
+    
+    // Main
+    React.createElement('div', { className: 'flex-1 flex overflow-hidden' },
+      // Canvas
+      React.createElement('div', { ref: containerRef, className: 'flex-1 relative ' + cursor, onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp, onWheel: onWheel },
+        React.createElement('canvas', { ref: canvasRef, className: 'absolute inset-0' }),
+        layers.length === 0 && React.createElement('div', { className: 'absolute inset-0 flex items-center justify-center pointer-events-none' }, React.createElement('div', { className: 'text-center text-zinc-600' }, React.createElement(Icon, { name: 'upload', size: 48 }), React.createElement('p', { className: 'text-sm mt-4' }, 'Upload Gerber files'))),
+        
+        // Stats overlay
+        paste && React.createElement('div', { className: 'absolute top-3 left-3 bg-zinc-900/90 backdrop-blur rounded px-3 py-2 text-[10px] space-y-1' },
+          React.createElement('div', { className: 'font-bold text-zinc-400 mb-1' }, 'PASTE STATS'),
+          React.createElement('div', null, 'Total: ', React.createElement('span', { className: 'text-zinc-300' }, paste.data?.shapes.filter(s => !s.deleted).length || 0)),
+          modCount > 0 && React.createElement('div', null, 'Modified: ', React.createElement('span', { className: 'text-orange-400' }, modCount)),
+          editCounts.reduce > 0 && React.createElement('div', { className: 'pl-2' }, '• Reduced: ', React.createElement('span', { className: 'text-orange-300' }, editCounts.reduce)),
+          editCounts.finePitch > 0 && React.createElement('div', { className: 'pl-2' }, '• Fine Pitch: ', React.createElement('span', { className: 'text-yellow-300' }, editCounts.finePitch)),
+          editCounts.cornerRadius > 0 && React.createElement('div', { className: 'pl-2' }, '• Rounded: ', React.createElement('span', { className: 'text-purple-300' }, editCounts.cornerRadius)),
+          editCounts.windowPane > 0 && React.createElement('div', { className: 'pl-2' }, '• Panes: ', React.createElement('span', { className: 'text-pink-300' }, editCounts.windowPane)),
+          selCount > 0 && React.createElement('div', null, 'Selected: ', React.createElement('span', { className: 'text-cyan-400' }, selCount))),
+        
+        // Legend
+        paste && modCount > 0 && React.createElement('div', { className: 'absolute bottom-3 left-3 bg-zinc-900/90 backdrop-blur rounded px-3 py-2 text-[9px] space-y-0.5' },
+          React.createElement('div', { className: 'font-bold text-zinc-500 mb-1' }, 'LEGEND'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-gray-600' }), 'Original'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-emerald-500' }), 'Unmodified'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-orange-500' }), 'Reduced'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-yellow-500' }), 'Fine Pitch'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-purple-500' }), 'Rounded'),
+          React.createElement('div', { className: 'flex items-center gap-1.5' }, React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-pink-500' }), 'Window Pane'))),
+      
+      // Sidebar
+      React.createElement('div', { className: 'w-72 border-l border-zinc-800 flex flex-col shrink-0 overflow-hidden' },
+        // Layer visibility
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800' },
+          React.createElement('h3', { className: 'text-[10px] font-bold text-zinc-500 mb-1.5' }, 'LAYERS'),
+          React.createElement('div', { className: 'space-y-1 max-h-32 overflow-auto' },
+            // Show all loaded layers for current side
+            layers.filter(l => l.side === side).map(l => {
+              const colors = { paste: '#22c55e', copper: '#f59e0b', mask: '#3b82f6', silk: '#f8fafc', outline: '#eab308', drill: '#a855f7' };
+              return React.createElement('label', { key: l.name, className: 'flex items-center gap-2 text-[10px] cursor-pointer' },
+                React.createElement('input', { type: 'checkbox', checked: l.visible, onChange: () => setLayers(layers.map(x => x.name === l.name ? { ...x, visible: !x.visible } : x)), className: 'rounded' }),
+                React.createElement('div', { className: 'w-2 h-2 rounded-sm', style: { backgroundColor: colors[l.type] || '#6b7280' } }),
+                React.createElement('span', { className: l.visible ? 'text-zinc-300' : 'text-zinc-600' }, l.type + ' (' + (l.data?.shapes?.length || 0) + ')'));
+            }),
+            // Original paste toggle
+            originalPaste && originalPaste.side === side && React.createElement('label', { className: 'flex items-center gap-2 text-[10px] cursor-pointer border-t border-zinc-800 pt-1 mt-1' },
+              React.createElement('input', { type: 'checkbox', checked: showOriginal, onChange: e => setShowOriginal(e.target.checked), className: 'rounded' }),
+              React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-gray-500' }),
+              React.createElement('span', { className: showOriginal ? 'text-zinc-300' : 'text-zinc-600' }, 'Original (gray ref)')),
+            // Fiducials
+            fidLayer && fidLayer.side === side && React.createElement('label', { className: 'flex items-center gap-2 text-[10px] cursor-pointer' },
+              React.createElement('input', { type: 'checkbox', checked: fidLayer.visible, onChange: () => setFidLayer({ ...fidLayer, visible: !fidLayer.visible }), className: 'rounded' }),
+              React.createElement('div', { className: 'w-2 h-2 rounded-sm bg-teal-500' }),
+              React.createElement('span', { className: fidLayer.visible ? 'text-teal-300' : 'text-zinc-600' }, 'Fiducials (' + (fidLayer.data?.shapes?.length || 0) + ')')))),
+        
+        // Instant Edit
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800' },
+          React.createElement('button', { onClick: instantEdit, disabled: !paste || busy, className: 'w-full px-3 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:from-zinc-700 disabled:to-zinc-700 rounded text-xs font-bold flex items-center justify-center gap-2 shadow-lg' }, React.createElement(Icon, { name: 'wand', size: 16 }), 'Stentech Instant Edit'),
+          React.createElement('p', { className: 'text-[9px] text-zinc-600 mt-1 text-center' }, 'Applies: reduction, fine pitch, corner radius, window panes')),
+        
+        // Quick Commands
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800' },
+          React.createElement('h3', { className: 'text-[10px] font-bold text-zinc-500 mb-1.5' }, 'PASTE MODIFICATIONS'),
+          React.createElement('div', { className: 'flex flex-wrap gap-1' },
+            quickCmds.map((q, i) => React.createElement('button', { key: i, onClick: () => execCmd({ ...q.cmd, selectedOnly: (q.cmd.action === 'windowPane' && selCount > 0) ? true : selCount > 0 }), disabled: !paste, className: 'px-2 py-1 text-[10px] rounded border disabled:opacity-50 ' + q.c }, q.label)))),
+        
+        // Fiducials - Cross-layer
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800' },
+          React.createElement('h3', { className: 'text-[10px] font-bold text-zinc-500 mb-1.5' }, 'FIDUCIALS (any layer)'),
+          React.createElement('button', { onClick: grabFids, disabled: allSelCount === 0, className: 'w-full px-2 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:bg-zinc-700 disabled:opacity-50 rounded text-xs font-medium flex items-center justify-center gap-1.5' }, 
+            React.createElement(Icon, { name: 'layers', size: 12 }), 
+            allSelCount > 0 ? 'Grab ' + allSelCount + ' as Fiducials' : 'Select shapes first'),
+          React.createElement('p', { className: 'text-[9px] text-zinc-600 mt-1' }, 'Select from copper, paste, or any layer')),
+        
+        // Custom Command - AI Powered
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800' },
+          React.createElement('h3', { className: 'text-[10px] font-bold text-zinc-500 mb-1.5 flex items-center gap-1' }, '🤖 AI COMMAND'),
+          React.createElement('div', { className: 'flex gap-1' },
+            React.createElement('input', { type: 'text', value: prompt, onChange: e => setPrompt(e.target.value), onKeyDown: e => { if (e.key === 'Enter') handleApply(); }, placeholder: 'Describe what to do...', className: 'flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-emerald-500', disabled: !paste || busy }),
+            React.createElement('button', { onClick: handleApply, disabled: !paste || busy || !prompt.trim(), className: 'px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:from-zinc-700 disabled:to-zinc-700 rounded text-xs font-medium' }, busy ? '...' : 'AI')),
+          React.createElement('div', { className: 'text-[9px] text-zinc-600 mt-1.5 space-y-0.5' },
+            React.createElement('p', null, 'Examples:'),
+            React.createElement('p', { className: 'text-violet-400/70 cursor-pointer hover:text-violet-300', onClick: () => setPrompt('reduce all pads by 10%') }, '"reduce all pads by 10%"'),
+            React.createElement('p', { className: 'text-violet-400/70 cursor-pointer hover:text-violet-300', onClick: () => setPrompt('add 3x3 window panes to large thermal pads') }, '"add 3x3 window panes to large thermal pads"'),
+            React.createElement('p', { className: 'text-violet-400/70 cursor-pointer hover:text-violet-300', onClick: () => setPrompt('shrink fine pitch leads by 0.05mm') }, '"shrink fine pitch leads by 0.05mm"'),
+            React.createElement('p', { className: 'text-violet-400/70 cursor-pointer hover:text-violet-300', onClick: () => setPrompt('round corners on BGA pads') }, '"round corners on BGA pads"'))),
+        
+        // Export
+        React.createElement('div', { className: 'p-2 border-b border-zinc-800 space-y-1' },
+          React.createElement('button', { onClick: () => doExport('paste'), disabled: !paste || modCount === 0, className: 'w-full px-2 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-700 disabled:opacity-50 rounded text-xs font-medium flex items-center justify-center gap-1.5' }, React.createElement(Icon, { name: 'download', size: 12 }), 'Export Modified Paste'),
+          fidLayer && React.createElement('button', { onClick: () => doExport('fid'), className: 'w-full px-2 py-1.5 bg-teal-600 hover:bg-teal-500 rounded text-xs font-medium flex items-center justify-center gap-1.5' }, React.createElement(Icon, { name: 'download', size: 12 }), 'Export Fiducials')),
+        
+        // Log
+        React.createElement('div', { className: 'flex-1 overflow-hidden flex flex-col p-2' },
+          React.createElement('h3', { className: 'text-[10px] font-bold text-zinc-500 mb-1' }, 'LOG'),
+          React.createElement('div', { className: 'flex-1 overflow-auto text-[9px] space-y-0.5' },
+            log.slice().reverse().map((e, i) => React.createElement('div', { key: i, className: e.includes('Error') ? 'text-red-400' : e.includes('✓') ? 'text-emerald-400 font-bold' : e.includes('🤖') ? 'text-violet-400' : e.includes('📝') ? 'text-blue-400' : e.includes('Loaded') || e.includes('OK') ? 'text-emerald-400' : e.includes('Reduced') || e.includes('reduction') ? 'text-orange-400' : e.includes('Fine pitch') ? 'text-yellow-400' : e.includes('Corner') || e.includes('Rounded') ? 'text-purple-400' : e.includes('Window') || e.includes('pane') ? 'text-pink-400' : e.includes('Selected') ? 'text-cyan-400' : e.includes('fiducial') ? 'text-teal-400' : e.includes('Interpret') ? 'text-violet-300' : 'text-zinc-500' }, e)))))));
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>
